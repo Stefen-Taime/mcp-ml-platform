@@ -1,217 +1,172 @@
-# Guide d'utilisation - Plateforme Centralisée de Modèles ML
+# Architecture de la Plateforme Centralisée de Modèles ML
 
-## Introduction
+## Vue d'ensemble
 
-Ce document présente un guide d'utilisation complet pour la plateforme centralisée de modèles ML développée avec l'approche API-First et le protocole MCP (Model Context Protocol). Cette plateforme permet de centraliser, déployer et exécuter des modèles d'apprentissage automatique de manière standardisée et évolutive.
+La plateforme centralisée de modèles ML est conçue selon une approche API-First avec le protocole MCP (Model Context Protocol) pour standardiser les communications entre les différents composants. L'architecture est déployée via Docker Compose pour faciliter le développement, les tests et le déploiement.
 
-## Architecture de la plateforme
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                  NGINX                                   │
+│                           (Proxy Inverse)                                │
+└───────────┬─────────────────┬──────────────────┬──────────────────┬─────┘
+            │                 │                  │                  │
+            ▼                 ▼                  ▼                  ▼
+┌────────────────┐  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐
+│    Frontend    │  │ API Gateway  │  │ Mongo Express │  │  MinIO Console   │
+│    (Next.js)   │  │  (FastAPI)   │  │              │  │                   │
+└────────┬───────┘  └───────┬──────┘  └───────┬───────┘  └─────────┬────────┘
+         │                  │                 │                    │
+         │                  ▼                 │                    │
+         │         ┌──────────────┐           │                    │
+         │         │   MCP Hub    │           │                    │
+         │         │              │           │                    │
+         │         └──┬─────┬─────┘           │                    │
+         │            │     │                 │                    │
+         │            ▼     ▼                 │                    │
+┌────────▼────────┐  ┌─────▼─────┐  ┌─────────▼─────────┐  ┌──────▼───────┐
+│  Model MCP      │  │ Data MCP  │  │  Execution MCP    │  │               │
+│  Server         │  │ Server    │  │  Server           │  │     MinIO     │
+│  (FastAPI)      │  │ (FastAPI) │  │  (FastAPI)        │  │               │
+└────────┬────────┘  └─────┬─────┘  └─────────┬─────────┘  └──────┬───────┘
+         │                 │                  │                   │
+         │                 │                  ▼                   │
+         │                 │         ┌────────────────┐           │
+         │                 │         │  Spark Master  │           │
+         │                 │         │                │           │
+         │                 │         └────────┬───────┘           │
+         │                 │                  │                   │
+         │                 │                  ▼                   │
+         │                 │         ┌────────────────┐           │
+         │                 │         │  Spark Worker  │           │
+         │                 │         │                │           │
+         │                 │         └────────────────┘           │
+         │                 │                                      │
+         ▼                 ▼                                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                MongoDB                                   │
+│                          (Base de données)                               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-La plateforme est composée des éléments suivants :
+## Composants principaux
 
-1. **Frontend (Next.js)** : Interface utilisateur pour interagir avec la plateforme
-2. **API Gateway (FastAPI)** : Point d'entrée unique pour toutes les requêtes
-3. **MCP Hub** : Coordinateur central qui gère les communications entre les serveurs MCP
-4. **Serveurs MCP spécialisés** :
-   - **Model MCP Server** : Gestion des modèles ML
-   - **Data MCP Server** : Accès aux données
-   - **Execution MCP Server** : Exécution des modèles via Groq et Spark
-5. **Services de stockage et bases de données** :
-   - **MinIO** : Stockage des modèles, datasets et résultats
-   - **MongoDB** : Stockage des métadonnées
-6. **Services de traitement** :
-   - **Spark** : Traitement distribué des données
+### 1. Frontend (Next.js)
 
-## Prérequis
+Interface utilisateur permettant aux utilisateurs d'interagir avec la plateforme. Principales fonctionnalités :
+- Tableau de bord
+- Gestion des modèles (liste, détail, création)
+- Gestion des déploiements (liste, détail, création)
+- Suivi des exécutions (liste, détail)
+- Gestion des utilisateurs
 
-- Docker et Docker Compose
-- Clé API Groq (pour l'inférence des modèles)
+### 2. API Gateway (FastAPI)
 
-## Installation et démarrage
+Point d'entrée unique pour toutes les requêtes API. Responsabilités :
+- Routage des requêtes vers les services appropriés
+- Validation des requêtes
+- Authentification et autorisation
+- Gestion des erreurs
+- Documentation de l'API (via Swagger UI)
 
-1. Clonez le dépôt :
-   ```bash
-   git clone <repository-url>
-   cd mcp-ml-platform
-   ```
+### 3. MCP Hub
 
-2. Configurez les variables d'environnement dans le fichier `.env` :
-   ```
-   MONGO_INITDB_ROOT_USERNAME=admin
-   MONGO_INITDB_ROOT_PASSWORD=adminpassword
-   MINIO_ROOT_USER=minioadmin
-   MINIO_ROOT_PASSWORD=minioadmin
-   GROQ_API_KEY=votre-clé-api-groq
-   ```
+Coordonnateur central pour tous les serveurs MCP. Responsabilités :
+- Gestion des communications entre les serveurs MCP
+- Orchestration des workflows
+- Implémentation des modèles d'agents (chaînage, portes, routage, etc.)
+- Suivi de l'état des serveurs MCP
 
-3. Démarrez la plateforme :
-   ```bash
-   docker-compose up -d
-   ```
+### 4. Serveurs MCP spécialisés
 
-4. Accédez à l'interface utilisateur :
-   ```
-   http://localhost
-   ```
+#### 4.1. Model MCP Server
 
-## Utilisation de la plateforme
+Gestion des modèles ML. Responsabilités :
+- CRUD des modèles
+- Stockage et récupération des fichiers de modèles via MinIO
+- Gestion des versions des modèles
+- Métadonnées des modèles dans MongoDB
 
-### 1. Gestion des modèles
+#### 4.2. Data MCP Server
 
-#### Ajouter un nouveau modèle
+Gestion des données. Responsabilités :
+- CRUD des ensembles de données
+- Stockage et récupération des données via MinIO
+- Transformation des données
+- Métadonnées des ensembles de données dans MongoDB
 
-1. Accédez à la page "Modèles" et cliquez sur "Ajouter un modèle"
-2. Remplissez les informations du modèle :
-   - Nom
-   - Description
-   - Type (classification, régression, etc.)
-   - Framework (PyTorch, TensorFlow, etc.)
-3. Téléchargez le fichier du modèle
-4. Cliquez sur "Créer"
+#### 4.3. Execution MCP Server
 
-#### Consulter les détails d'un modèle
+Exécution des modèles. Responsabilités :
+- Gestion des déploiements
+- Exécution des modèles via Groq
+- Traitement distribué via Spark
+- Stockage des résultats dans MinIO
+- Métadonnées des exécutions dans MongoDB
 
-1. Accédez à la page "Modèles"
-2. Cliquez sur le modèle souhaité pour voir ses détails
+### 5. Services de stockage et bases de données
 
-### 2. Gestion des datasets
+#### 5.1. MongoDB
 
-#### Ajouter un nouveau dataset
+Base de données pour les métadonnées. Stocke :
+- Informations sur les modèles
+- Informations sur les ensembles de données
+- Informations sur les déploiements
+- Informations sur les exécutions
+- Informations sur les utilisateurs
 
-1. Accédez à la page "Datasets" et cliquez sur "Ajouter un dataset"
-2. Remplissez les informations du dataset :
-   - Nom
-   - Description
-   - Type (image, texte, tabulaire, etc.)
-3. Téléchargez le fichier du dataset
-4. Cliquez sur "Créer"
+#### 5.2. MinIO
 
-### 3. Déploiement de modèles
+Stockage d'objets pour :
+- Fichiers de modèles
+- Ensembles de données
+- Résultats d'exécution
+- Fichiers de configuration
 
-#### Créer un déploiement
+#### 5.3. Mongo Express
 
-1. Accédez à la page "Déploiements" et cliquez sur "Créer un déploiement"
-2. Sélectionnez le modèle à déployer
-3. Configurez les paramètres du déploiement :
-   - Nom du déploiement
-   - Environnement (production, staging, etc.)
-   - Ressources allouées
-4. Cliquez sur "Déployer"
+Interface web pour la gestion de MongoDB.
 
-### 4. Exécution de modèles
+### 6. Services de traitement
 
-#### Lancer une exécution
+#### 6.1. Spark Master
 
-1. Accédez à la page "Exécutions" et cliquez sur "Nouvelle exécution"
-2. Sélectionnez le déploiement à utiliser
-3. Configurez les paramètres d'exécution :
-   - Dataset à utiliser
-   - Paramètres spécifiques au modèle
-4. Cliquez sur "Exécuter"
+Coordinateur pour le traitement distribué.
 
-#### Consulter les résultats d'une exécution
+#### 6.2. Spark Worker
 
-1. Accédez à la page "Exécutions"
-2. Cliquez sur l'exécution souhaitée pour voir ses détails et résultats
-3. Visualisez les métriques et téléchargez les résultats
+Nœud de travail pour le traitement distribué.
 
-## Administration de la plateforme
+### 7. Nginx
 
-### Accès aux interfaces d'administration
+Proxy inverse pour :
+- Router le trafic vers le frontend sur /
+- Router le trafic API vers l'API gateway sur /api
+- Exposer les services de gestion (Minio Console, Mongo Express) sur des sous-chemins sécurisés
 
-- **MinIO Console** : http://localhost/minio/
-- **Mongo Express** : http://localhost/mongo-express/
-- **Spark UI** : http://localhost/spark/
+## Flux de données
 
-### Gestion des utilisateurs
-
-La gestion des utilisateurs n'est pas implémentée dans ce POC, mais pourrait être ajoutée en intégrant un service d'authentification comme Keycloak.
-
-## Protocole MCP (Model Context Protocol)
-
-Le protocole MCP est au cœur de la plateforme et standardise les communications entre les différents composants. Chaque message MCP contient :
-
-- Version du protocole
-- ID du message
-- Horodatage
-- Expéditeur et destinataire
-- Type de message (requête/réponse)
-- Opération à effectuer
-- Charge utile (payload)
-- Métadonnées
+1. L'utilisateur interagit avec le frontend
+2. Le frontend envoie des requêtes à l'API Gateway
+3. L'API Gateway route les requêtes vers le MCP Hub
+4. Le MCP Hub coordonne les communications entre les serveurs MCP
+5. Les serveurs MCP interagissent avec MongoDB pour les métadonnées et MinIO pour le stockage d'objets
+6. L'Execution MCP Server utilise Groq pour l'inférence et Spark pour le traitement distribué
+7. Les résultats sont stockés dans MinIO et les métadonnées dans MongoDB
+8. Le frontend récupère et affiche les résultats à l'utilisateur
 
 ## Modèles d'agents implémentés
 
-La plateforme implémente plusieurs modèles d'agents pour gérer différents cas d'utilisation :
-
-1. **Chaînage d'invites** : Exécution séquentielle d'opérations
-2. **Portes** : Validation avant exécution
+1. **Chaînage d'invites** : Enchaînement séquentiel d'opérations
+2. **Portes (validation)** : Vérification de conditions avant exécution
 3. **Routage** : Direction des requêtes vers différents services
-4. **Parallélisation** : Exécution parallèle et agrégation
+4. **Parallélisation (sectionnement et vote)** : Exécution parallèle et agrégation
 5. **Orchestrateurs-Ouvriers** : Distribution et coordination de tâches
 6. **Évaluateur-Optimiseur** : Évaluation et optimisation des performances
 
-## Dépannage
+## Communication via MCP
 
-### Problèmes courants
+Tous les composants communiquent via le protocole MCP, qui définit un format standard pour les requêtes et les réponses. Voir le fichier `mcp_protocol.md` pour plus de détails.
 
-1. **Erreur de connexion à MongoDB** :
-   - Vérifiez que le service MongoDB est en cours d'exécution
-   - Vérifiez les identifiants dans le fichier .env
+## Déploiement
 
-2. **Erreur d'accès à MinIO** :
-   - Vérifiez que le service MinIO est en cours d'exécution
-   - Vérifiez les identifiants dans le fichier .env
-
-3. **Erreur lors de l'exécution d'un modèle** :
-   - Vérifiez que la clé API Groq est correctement configurée
-   - Vérifiez que le service Spark est en cours d'exécution
-
-### Logs
-
-Les logs de chaque service peuvent être consultés avec la commande :
-```bash
-docker-compose logs <service-name>
-```
-
-## Exemple de flux complet
-
-Voici un exemple de flux complet d'utilisation de la plateforme :
-
-1. **Ajout d'un modèle de classification d'images** :
-   - Accédez à la page "Modèles"
-   - Cliquez sur "Ajouter un modèle"
-   - Remplissez les informations : Nom="Modèle de classification d'images", Type="Classification", Framework="PyTorch"
-   - Téléchargez le fichier du modèle
-   - Cliquez sur "Créer"
-
-2. **Ajout d'un dataset d'images** :
-   - Accédez à la page "Datasets"
-   - Cliquez sur "Ajouter un dataset"
-   - Remplissez les informations : Nom="Dataset d'images CIFAR-10", Type="Image"
-   - Téléchargez le fichier du dataset
-   - Cliquez sur "Créer"
-
-3. **Création d'un déploiement** :
-   - Accédez à la page "Déploiements"
-   - Cliquez sur "Créer un déploiement"
-   - Sélectionnez le modèle de classification d'images
-   - Configurez les paramètres : Nom="Déploiement de classification d'images", Environnement="Production"
-   - Cliquez sur "Déployer"
-
-4. **Exécution du modèle** :
-   - Accédez à la page "Exécutions"
-   - Cliquez sur "Nouvelle exécution"
-   - Sélectionnez le déploiement de classification d'images
-   - Sélectionnez le dataset CIFAR-10
-   - Configurez les paramètres : batch_size=32
-   - Cliquez sur "Exécuter"
-
-5. **Consultation des résultats** :
-   - Attendez que l'exécution soit terminée
-   - Cliquez sur l'exécution pour voir les détails
-   - Consultez les métriques (précision, rappel, etc.)
-   - Téléchargez les résultats pour une analyse plus approfondie
-
-## Conclusion
-
-Cette plateforme centralisée de modèles ML offre une solution complète pour gérer le cycle de vie des modèles d'apprentissage automatique, de leur création à leur déploiement et exécution. L'approche API-First avec le protocole MCP permet une standardisation des communications et une évolutivité de la plateforme.
+L'ensemble de la plateforme est déployé via Docker Compose, avec un conteneur Docker pour chaque service. Chaque service personnalisé (frontend, api-gateway, mcp-hub, et les serveurs MCP) a son propre Dockerfile dans son répertoire respectif.
