@@ -1,0 +1,210 @@
+services:
+  # Proxy inverse Nginx
+  nginx:
+    build:
+      context: ./nginx
+    ports:
+      - "${NGINX_PORT}:80"
+    depends_on:
+      - frontend
+      - api-gateway
+      - minio
+      - mongo-express
+    networks:
+      - mcp-network
+    restart: always
+
+  # Frontend Next.js
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost/api
+    ports:
+      - "${FRONTEND_PORT}:3000"
+    networks:
+      - mcp-network
+    restart: always
+
+  # API Gateway FastAPI
+  api-gateway:
+    build:
+      context: ./api-gateway
+    environment:
+      - MCP_HUB_URL=http://mcp-hub:${MCP_HUB_PORT}
+    ports:
+      - "${API_GATEWAY_PORT}:8000"
+    networks:
+      - mcp-network
+    restart: always
+
+  # MCP Hub
+  mcp-hub:
+    build:
+      context: ./mcp-hub
+    environment:
+      - MODEL_MCP_SERVER_URL=http://model-mcp-server:${MODEL_MCP_SERVER_PORT}
+      - DATA_MCP_SERVER_URL=http://data-mcp-server:${DATA_MCP_SERVER_PORT}
+      - EXECUTION_MCP_SERVER_URL=http://execution-mcp-server:${EXECUTION_MCP_SERVER_PORT}
+      - MONGODB_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:${MONGO_PORT}/${MONGO_INITDB_DATABASE}?authSource=admin
+    ports:
+      - "${MCP_HUB_PORT}:8001"
+    networks:
+      - mcp-network
+    restart: always
+
+  # Model MCP Server
+  model-mcp-server:
+    build:
+      context: ./model-mcp-server
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:${MONGO_PORT}/${MONGO_INITDB_DATABASE}?authSource=admin
+      - MINIO_ENDPOINT=minio:${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - MINIO_SECURE=False
+    ports:
+      - "${MODEL_MCP_SERVER_PORT}:8002"
+    networks:
+      - mcp-network
+    restart: always
+
+  # Data MCP Server
+  data-mcp-server:
+    build:
+      context: ./data-mcp-server
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:${MONGO_PORT}/${MONGO_INITDB_DATABASE}?authSource=admin
+      - MINIO_ENDPOINT=minio:${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - MINIO_SECURE=False
+    ports:
+      - "${DATA_MCP_SERVER_PORT}:8003"
+    networks:
+      - mcp-network
+    restart: always
+
+  # Execution MCP Server
+  execution-mcp-server:
+    build:
+      context: ./execution-mcp-server
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:${MONGO_PORT}/${MONGO_INITDB_DATABASE}?authSource=admin
+      - MINIO_ENDPOINT=minio:${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - MINIO_SECURE=False
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - SPARK_MASTER_URL=spark://spark-master:${SPARK_MASTER_PORT}
+    ports:
+      - "${EXECUTION_MCP_SERVER_PORT}:8004"
+    networks:
+      - mcp-network
+    restart: always
+
+  # MongoDB
+  mongodb:
+    image: mongo:6.0
+    command: ["mongod", "--bind_ip_all"]  # Utiliser seulement --bind_ip_all sans réplication
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
+      - MONGO_INITDB_DATABASE=${MONGO_INITDB_DATABASE}
+    ports:
+      - "${MONGO_PORT}:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - ./mongodb/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      mcp-network:
+        aliases:
+          - mongo  # Garde l'alias réseau
+    restart: always
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh mongodb:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+      
+  # Mongo Express
+  mongo-express:
+    image: mongo-express:latest
+    environment:
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:27017/${MONGO_INITDB_DATABASE}?authSource=admin
+      # Vous pouvez laisser les autres variables, mais cette URL prendra priorité
+    ports:
+      - "${MONGO_EXPRESS_PORT}:8081"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - mcp-network
+    restart: always
+
+  # MinIO
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT}"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - mcp-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:latest
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "${SPARK_MASTER_PORT}:7077"
+      - "${SPARK_MASTER_WEBUI_PORT}:8080"
+    networks:
+      - mcp-network
+    restart: always
+
+  # Spark Worker
+  spark-worker:
+    image: bitnami/spark:latest
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "${SPARK_WORKER_WEBUI_PORT}:8081"
+    depends_on:
+      - spark-master
+    networks:
+      - mcp-network
+    restart: always
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  mongodb-data:
+  minio-data:
