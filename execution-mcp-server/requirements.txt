@@ -1,8 +1,6 @@
-fastapi==0.104.1
-uvicorn==0.23.2
-httpx==0.25.1
-pymongo==4.5.0
-minio==7.1.17
-python-multipart==0.0.6
-groq==0.4.0
-pyspark==3.5.0
+fastapi>=0.95.1
+uvicorn>=0.22.0
+httpx>=0.24.0
+pymongo>=4.3.3
+minio>=7.1.14
+python-multipart>=0.0.6

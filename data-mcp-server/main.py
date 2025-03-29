@@ -9,6 +9,7 @@ import os
 from typing import Dict, Any, List, Optional
 import pymongo
 from pymongo import MongoClient
+from bson import ObjectId
 from minio import Minio
 from minio.error import S3Error
 
@@ -41,6 +42,28 @@ minio_client = Minio(
     secret_key=MINIO_SECRET_KEY,
     secure=MINIO_SECURE
 )
+
+# Classe d'encodeur JSON personnalisé pour MongoDB
+class MongoJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+# Fonction pour convertir les ObjectId en chaînes de caractères
+def mongo_to_json_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: mongo_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [mongo_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, ObjectId):
+        return str(obj)
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    else:
+        return obj
 
 # Bucket pour les datasets
 DATASETS_BUCKET = "datasets"
@@ -77,6 +100,9 @@ async def log_requests(request: Request, call_next):
 
 # Fonction pour créer une réponse MCP
 def create_mcp_response(request_message: Dict[str, Any], payload: Dict[str, Any], status: str = "success") -> Dict[str, Any]:
+    # Convertir le payload pour qu'il soit sérialisable en JSON
+    serializable_payload = mongo_to_json_serializable(payload)
+    
     return {
         "mcp_version": "1.0",
         "message_id": str(uuid.uuid4()),
@@ -89,7 +115,7 @@ def create_mcp_response(request_message: Dict[str, Any], payload: Dict[str, Any]
         "message_type": "response",
         "operation": request_message.get("operation", "unknown"),
         "status": status,
-        "payload": payload,
+        "payload": serializable_payload,
         "metadata": {
             "request_id": request_message.get("message_id", "unknown")
         }
@@ -108,26 +134,31 @@ def create_mcp_error_response(request_message: Dict[str, Any], error_message: st
 async def process_mcp_message(message: Dict[str, Any]):
     try:
         operation = message.get("operation")
+        print(f"Received MCP request for operation: {operation}")
+        print(f"Request payload: {json.dumps(message.get('payload', {}), cls=MongoJSONEncoder)}")
         
         # Router vers la fonction appropriée en fonction de l'opération
         if operation == "list_datasets":
-            return await list_datasets(message)
+            response = await list_datasets(message)
         elif operation == "get_dataset":
-            return await get_dataset(message)
+            response = await get_dataset(message)
         elif operation == "create_dataset":
-            return await create_dataset(message)
+            response = await create_dataset(message)
         elif operation == "update_dataset":
-            return await update_dataset(message)
+            response = await update_dataset(message)
         elif operation == "delete_dataset":
-            return await delete_dataset(message)
+            response = await delete_dataset(message)
         elif operation == "upload_data":
-            return await upload_data(message)
+            response = await upload_data(message)
         elif operation == "download_data":
-            return await download_data(message)
+            response = await download_data(message)
         elif operation == "transform_data":
-            return await transform_data(message)
+            response = await transform_data(message)
         else:
-            return create_mcp_error_response(message, f"Unsupported operation: {operation}", 400)
+            response = create_mcp_error_response(message, f"Unsupported operation: {operation}", 400)
+        
+        print(f"Sending MCP response for operation: {operation}")
+        return response
     
     except Exception as e:
         print(f"Error processing message: {str(e)}")
@@ -137,9 +168,12 @@ async def process_mcp_message(message: Dict[str, Any]):
 async def list_datasets(message: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Récupérer tous les datasets de la base de données
-        datasets = list(datasets_collection.find({}, {"_id": 0}))
+        datasets = list(datasets_collection.find({}))
         
-        return create_mcp_response(message, {"datasets": datasets})
+        # Convertir les datasets en objets sérialisables en JSON
+        serializable_datasets = mongo_to_json_serializable(datasets)
+        
+        return create_mcp_response(message, {"datasets": serializable_datasets})
     
     except Exception as e:
         print(f"Error listing datasets: {str(e)}")
@@ -152,11 +186,14 @@ async def get_dataset(message: Dict[str, Any]) -> Dict[str, Any]:
             return create_mcp_error_response(message, "Dataset ID is required", 400)
         
         # Récupérer le dataset de la base de données
-        dataset = datasets_collection.find_one({"id": dataset_id}, {"_id": 0})
+        dataset = datasets_collection.find_one({"id": dataset_id})
         if not dataset:
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} not found", 404)
         
-        return create_mcp_response(message, {"dataset": dataset})
+        # Convertir le dataset en objet sérialisable en JSON
+        serializable_dataset = mongo_to_json_serializable(dataset)
+        
+        return create_mcp_response(message, {"dataset": serializable_dataset})
     
     except Exception as e:
         print(f"Error getting dataset: {str(e)}")
@@ -176,10 +213,16 @@ async def create_dataset(message: Dict[str, Any]) -> Dict[str, Any]:
         dataset_data["created_at"] = datetime.now().isoformat()
         dataset_data["updated_at"] = dataset_data["created_at"]
         
+        # Log la création du dataset
+        print(f"Creating dataset with ID: {dataset_data['id']}")
+        
         # Insérer le dataset dans la base de données
         datasets_collection.insert_one(dataset_data)
         
-        return create_mcp_response(message, {"dataset": dataset_data})
+        # Convertir le dataset en objet sérialisable en JSON
+        serializable_dataset = mongo_to_json_serializable(dataset_data)
+        
+        return create_mcp_response(message, {"dataset": serializable_dataset})
     
     except pymongo.errors.DuplicateKeyError:
         return create_mcp_error_response(message, f"Dataset with ID {dataset_data.get('id')} already exists", 409)
@@ -201,6 +244,9 @@ async def update_dataset(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_dataset:
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_dataset = mongo_to_json_serializable(existing_dataset)
+        
         # Mettre à jour le timestamp
         dataset_data["updated_at"] = datetime.now().isoformat()
         if "created_at" not in dataset_data:
@@ -209,7 +255,13 @@ async def update_dataset(message: Dict[str, Any]) -> Dict[str, Any]:
         # Mettre à jour le dataset dans la base de données
         datasets_collection.update_one({"id": dataset_id}, {"$set": dataset_data})
         
-        return create_mcp_response(message, {"dataset": dataset_data})
+        # Log la mise à jour
+        print(f"Dataset updated with ID: {dataset_id}")
+        
+        # Convertir le dataset en objet sérialisable en JSON
+        serializable_dataset = mongo_to_json_serializable(dataset_data)
+        
+        return create_mcp_response(message, {"dataset": serializable_dataset})
     
     except Exception as e:
         print(f"Error updating dataset: {str(e)}")
@@ -229,11 +281,15 @@ async def delete_dataset(message: Dict[str, Any]) -> Dict[str, Any]:
         # Supprimer le dataset de la base de données
         datasets_collection.delete_one({"id": dataset_id})
         
+        # Log la suppression
+        print(f"Dataset deleted with ID: {dataset_id}")
+        
         # Supprimer les fichiers associés dans MinIO
         try:
             objects = minio_client.list_objects(DATASETS_BUCKET, prefix=f"{dataset_id}/")
             for obj in objects:
                 minio_client.remove_object(DATASETS_BUCKET, obj.object_name)
+                print(f"Deleted object from MinIO: {obj.object_name}")
         except S3Error as e:
             print(f"Warning: Could not delete dataset files from MinIO: {str(e)}")
         
@@ -259,6 +315,9 @@ async def upload_data(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_dataset:
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_dataset = mongo_to_json_serializable(existing_dataset)
+        
         # Chemin du fichier dans MinIO
         object_name = f"{dataset_id}/{file_name}"
         
@@ -279,6 +338,9 @@ async def upload_data(message: Dict[str, Any]) -> Dict[str, Any]:
                 file_size,
                 content_type=content_type
             )
+            
+            # Log l'upload
+            print(f"File uploaded to MinIO: {object_name}, size: {file_size}")
             
             # Mettre à jour les métadonnées du dataset
             datasets_collection.update_one(
@@ -301,6 +363,7 @@ async def upload_data(message: Dict[str, Any]) -> Dict[str, Any]:
             })
             
         except S3Error as e:
+            print(f"Error uploading file to MinIO: {str(e)}")
             return create_mcp_error_response(message, f"Error uploading file to MinIO: {str(e)}", 500)
     
     except Exception as e:
@@ -318,6 +381,9 @@ async def download_data(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_dataset:
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_dataset = mongo_to_json_serializable(existing_dataset)
+        
         # Vérifier si le dataset a un fichier associé
         if not existing_dataset.get("has_file"):
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} has no associated file", 404)
@@ -332,6 +398,9 @@ async def download_data(message: Dict[str, Any]) -> Dict[str, Any]:
             response = minio_client.get_object(DATASETS_BUCKET, file_path)
             file_data = response.read()
             
+            # Log le téléchargement
+            print(f"File downloaded from MinIO: {file_path}, size: {len(file_data)}")
+            
             # Encoder le contenu du fichier en base64
             encoded_content = base64.b64encode(file_data).decode('utf-8')
             
@@ -344,6 +413,7 @@ async def download_data(message: Dict[str, Any]) -> Dict[str, Any]:
             })
             
         except S3Error as e:
+            print(f"Error downloading file from MinIO: {str(e)}")
             return create_mcp_error_response(message, f"Error downloading file from MinIO: {str(e)}", 500)
     
     except Exception as e:
@@ -364,9 +434,15 @@ async def transform_data(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_dataset:
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_dataset = mongo_to_json_serializable(existing_dataset)
+        
         # Vérifier si le dataset a un fichier associé
         if not existing_dataset.get("has_file"):
             return create_mcp_error_response(message, f"Dataset with ID {dataset_id} has no associated file", 404)
+        
+        # Log la transformation
+        print(f"Transforming dataset with ID: {dataset_id}")
         
         # Dans un système réel, nous appliquerions ici les transformations aux données
         # Pour ce POC, nous simulons simplement une transformation réussie
@@ -404,12 +480,46 @@ async def transform_data(message: Dict[str, Any]) -> Dict[str, Any]:
             {"$set": transformed_dataset}
         )
         
+        # Convertir le dataset transformé en objet sérialisable en JSON
+        serializable_transformed_dataset = mongo_to_json_serializable(transformed_dataset)
+        
         return create_mcp_response(message, {
             "message": f"Data transformation completed for dataset {dataset_id}",
             "transformed_dataset_id": transformed_dataset_id,
-            "transformed_dataset": transformed_dataset
+            "transformed_dataset": serializable_transformed_dataset
         })
     
     except Exception as e:
         print(f"Error transforming data: {str(e)}")
         return create_mcp_error_response(message, f"Error transforming data: {str(e)}", 500)
+
+# Route de santé
+@app.get("/health")
+async def health_check():
+    try:
+        # Vérifier la connexion à MongoDB
+        mongo_status = "ok" if mongo_client.server_info() else "error"
+        
+        # Vérifier la connexion à MinIO
+        minio_status = "ok" if minio_client.bucket_exists(DATASETS_BUCKET) else "error"
+        
+        status = "ok" if mongo_status == "ok" and minio_status == "ok" else "error"
+        
+        return {
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "mongodb": mongo_status,
+                "minio": minio_status
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8003)

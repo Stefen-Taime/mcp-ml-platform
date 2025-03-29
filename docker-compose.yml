@@ -97,8 +97,13 @@ services:
       - MINIO_SECURE=False
       - GROQ_API_KEY=${GROQ_API_KEY}
       - SPARK_MASTER_URL=spark://spark-master:${SPARK_MASTER_PORT}
+      - SPARK_ENABLED=true
+      - SPARK_APP_PATH=/opt/spark-apps/model_execution.py
     ports:
       - "${EXECUTION_MCP_SERVER_PORT}:8004"
+    volumes:
+      - ./spark/apps:/opt/spark-apps
+  
     networks:
       - mcp-network
     restart: always
@@ -128,7 +133,7 @@ services:
       retries: 5
       start_period: 40s
 
-      
+
   # Mongo Express
   mongo-express:
     image: mongo-express:latest

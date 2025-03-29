@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost/api';
+// Utiliser l'API proxy locale de Next.js
+const API_URL = '/api';
 
 const api = axios.create({
   baseURL: API_URL,
@@ -19,10 +20,27 @@ export const modelsApi = {
     const response = await api.get(`/models/${id}`);
     return response.data;
   },
-  create: async (modelData) => {
+  // Dans modelsApi.create:
+create: async (modelData) => {
+  try {
     const response = await api.post('/models', modelData);
     return response.data;
-  },
+  } catch (err) {
+    console.warn('Received error but operation may have succeeded:', err);
+    // Vérifier si le modèle a été créé malgré l'erreur
+    try {
+      const models = await api.get('/models');
+      const createdModel = models.data.find(m => m.name === modelData.name);
+      if (createdModel) {
+        console.log('Model was created successfully despite error');
+        return createdModel;
+      }
+    } catch (checkErr) {
+      console.error('Error checking if model was created:', checkErr);
+    }
+    throw err;
+  }
+},
   update: async (id, modelData) => {
     const response = await api.put(`/models/${id}`, modelData);
     return response.data;

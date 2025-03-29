@@ -9,6 +9,7 @@ import os
 from typing import Dict, Any, List, Optional
 import pymongo
 from pymongo import MongoClient
+from bson import ObjectId
 from minio import Minio
 from minio.error import S3Error
 
@@ -45,6 +46,28 @@ minio_client = Minio(
 # Bucket pour les modèles
 MODELS_BUCKET = "models"
 
+# Classe d'encodeur JSON personnalisé pour MongoDB
+class MongoJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+# Fonction pour convertir les ObjectId en chaînes de caractères
+def mongo_to_json_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: mongo_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [mongo_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, ObjectId):
+        return str(obj)
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    else:
+        return obj
+
 # Vérifier si le bucket existe, sinon le créer
 try:
     if not minio_client.bucket_exists(MODELS_BUCKET):
@@ -77,6 +100,9 @@ async def log_requests(request: Request, call_next):
 
 # Fonction pour créer une réponse MCP
 def create_mcp_response(request_message: Dict[str, Any], payload: Dict[str, Any], status: str = "success") -> Dict[str, Any]:
+    # Convertir tous les éléments du payload pour qu'ils soient sérialisables en JSON
+    serializable_payload = mongo_to_json_serializable(payload)
+    
     return {
         "mcp_version": "1.0",
         "message_id": str(uuid.uuid4()),
@@ -89,7 +115,7 @@ def create_mcp_response(request_message: Dict[str, Any], payload: Dict[str, Any]
         "message_type": "response",
         "operation": request_message.get("operation", "unknown"),
         "status": status,
-        "payload": payload,
+        "payload": serializable_payload,
         "metadata": {
             "request_id": request_message.get("message_id", "unknown")
         }
@@ -108,24 +134,29 @@ def create_mcp_error_response(request_message: Dict[str, Any], error_message: st
 async def process_mcp_message(message: Dict[str, Any]):
     try:
         operation = message.get("operation")
+        print(f"Received MCP request for operation: {operation}")
+        print(f"Request payload: {json.dumps(message.get('payload', {}), cls=MongoJSONEncoder)}")
         
         # Router vers la fonction appropriée en fonction de l'opération
         if operation == "list_models":
-            return await list_models(message)
+            response = await list_models(message)
         elif operation == "get_model":
-            return await get_model(message)
+            response = await get_model(message)
         elif operation == "create_model":
-            return await create_model(message)
+            response = await create_model(message)
         elif operation == "update_model":
-            return await update_model(message)
+            response = await update_model(message)
         elif operation == "delete_model":
-            return await delete_model(message)
+            response = await delete_model(message)
         elif operation == "upload_model_file":
-            return await upload_model_file(message)
+            response = await upload_model_file(message)
         elif operation == "download_model_file":
-            return await download_model_file(message)
+            response = await download_model_file(message)
         else:
-            return create_mcp_error_response(message, f"Unsupported operation: {operation}", 400)
+            response = create_mcp_error_response(message, f"Unsupported operation: {operation}", 400)
+        
+        print(f"Sending MCP response for operation: {operation}")
+        return response
     
     except Exception as e:
         print(f"Error processing message: {str(e)}")
@@ -135,9 +166,12 @@ async def process_mcp_message(message: Dict[str, Any]):
 async def list_models(message: Dict[str, Any]) -> Dict[str, Any]:
     try:
         # Récupérer tous les modèles de la base de données
-        models = list(models_collection.find({}, {"_id": 0}))
+        models = list(models_collection.find({}))
         
-        return create_mcp_response(message, {"models": models})
+        # Convertir les modèles en objets sérialisables en JSON
+        serializable_models = mongo_to_json_serializable(models)
+        
+        return create_mcp_response(message, {"models": serializable_models})
     
     except Exception as e:
         print(f"Error listing models: {str(e)}")
@@ -150,11 +184,14 @@ async def get_model(message: Dict[str, Any]) -> Dict[str, Any]:
             return create_mcp_error_response(message, "Model ID is required", 400)
         
         # Récupérer le modèle de la base de données
-        model = models_collection.find_one({"id": model_id}, {"_id": 0})
+        model = models_collection.find_one({"id": model_id})
         if not model:
             return create_mcp_error_response(message, f"Model with ID {model_id} not found", 404)
         
-        return create_mcp_response(message, {"model": model})
+        # Convertir le modèle en objet sérialisable en JSON
+        serializable_model = mongo_to_json_serializable(model)
+        
+        return create_mcp_response(message, {"model": serializable_model})
     
     except Exception as e:
         print(f"Error getting model: {str(e)}")
@@ -176,6 +213,9 @@ async def create_model(message: Dict[str, Any]) -> Dict[str, Any]:
         
         # Insérer le modèle dans la base de données
         models_collection.insert_one(model_data)
+        
+        # Log la création du modèle
+        print(f"Model created with ID: {model_data['id']}")
         
         return create_mcp_response(message, {"model": model_data})
     
@@ -199,6 +239,9 @@ async def update_model(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_model:
             return create_mcp_error_response(message, f"Model with ID {model_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_model = mongo_to_json_serializable(existing_model)
+        
         # Mettre à jour le timestamp
         model_data["updated_at"] = datetime.now().isoformat()
         if "created_at" not in model_data:
@@ -206,6 +249,9 @@ async def update_model(message: Dict[str, Any]) -> Dict[str, Any]:
         
         # Mettre à jour le modèle dans la base de données
         models_collection.update_one({"id": model_id}, {"$set": model_data})
+        
+        # Log la mise à jour
+        print(f"Model updated with ID: {model_id}")
         
         return create_mcp_response(message, {"model": model_data})
     
@@ -227,11 +273,15 @@ async def delete_model(message: Dict[str, Any]) -> Dict[str, Any]:
         # Supprimer le modèle de la base de données
         models_collection.delete_one({"id": model_id})
         
+        # Log la suppression
+        print(f"Model deleted with ID: {model_id}")
+        
         # Supprimer les fichiers associés dans MinIO
         try:
             objects = minio_client.list_objects(MODELS_BUCKET, prefix=f"{model_id}/")
             for obj in objects:
                 minio_client.remove_object(MODELS_BUCKET, obj.object_name)
+                print(f"Deleted object from MinIO: {obj.object_name}")
         except S3Error as e:
             print(f"Warning: Could not delete model files from MinIO: {str(e)}")
         
@@ -278,6 +328,9 @@ async def upload_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
                 content_type=content_type
             )
             
+            # Log l'upload
+            print(f"File uploaded to MinIO: {object_name}, size: {file_size}")
+            
             # Mettre à jour les métadonnées du modèle
             models_collection.update_one(
                 {"id": model_id},
@@ -299,6 +352,7 @@ async def upload_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
             })
             
         except S3Error as e:
+            print(f"Error uploading file to MinIO: {str(e)}")
             return create_mcp_error_response(message, f"Error uploading file to MinIO: {str(e)}", 500)
     
     except Exception as e:
@@ -316,6 +370,9 @@ async def download_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
         if not existing_model:
             return create_mcp_error_response(message, f"Model with ID {model_id} not found", 404)
         
+        # Convertir l'objet existant pour accès compatible
+        existing_model = mongo_to_json_serializable(existing_model)
+        
         # Vérifier si le modèle a un fichier associé
         if not existing_model.get("has_file"):
             return create_mcp_error_response(message, f"Model with ID {model_id} has no associated file", 404)
@@ -330,6 +387,9 @@ async def download_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
             response = minio_client.get_object(MODELS_BUCKET, file_path)
             file_data = response.read()
             
+            # Log le téléchargement
+            print(f"File downloaded from MinIO: {file_path}, size: {len(file_data)}")
+            
             # Encoder le contenu du fichier en base64
             encoded_content = base64.b64encode(file_data).decode('utf-8')
             
@@ -342,6 +402,7 @@ async def download_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
             })
             
         except S3Error as e:
+            print(f"Error downloading file from MinIO: {str(e)}")
             return create_mcp_error_response(message, f"Error downloading file from MinIO: {str(e)}", 500)
     
     except Exception as e:
@@ -351,7 +412,29 @@ async def download_model_file(message: Dict[str, Any]) -> Dict[str, Any]:
 # Route de santé
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    try:
+        # Vérifier la connexion à MongoDB
+        mongo_status = "ok" if mongo_client.server_info() else "error"
+        
+        # Vérifier la connexion à MinIO
+        minio_status = "ok" if minio_client.bucket_exists(MODELS_BUCKET) else "error"
+        
+        status = "ok" if mongo_status == "ok" and minio_status == "ok" else "error"
+        
+        return {
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "mongodb": mongo_status,
+                "minio": minio_status
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
